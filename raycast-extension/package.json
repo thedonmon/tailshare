@@ -1,0 +1,50 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "tailshare",
+  "title": "Tailshare",
+  "description": "Share clipboard and files across machines over Tailscale",
+  "icon": "extension-icon.png",
+  "author": "thedonmon",
+  "categories": ["Productivity", "System"],
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "send-clipboard",
+      "title": "Send Clipboard",
+      "description": "Send your clipboard (text, image, or file) to the default device",
+      "mode": "no-view"
+    },
+    {
+      "name": "get-clipboard",
+      "title": "Get Clipboard",
+      "description": "Get the clipboard from the default device",
+      "mode": "no-view"
+    },
+    {
+      "name": "list-devices",
+      "title": "List Devices",
+      "description": "Show all devices on your Tailscale network",
+      "mode": "view"
+    },
+    {
+      "name": "send-to-device",
+      "title": "Send Clipboard to Device",
+      "description": "Pick a device and send your clipboard to it",
+      "mode": "view"
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^1.93.3",
+    "@raycast/utils": "^1.19.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "typescript": "^5.8.0"
+  },
+  "scripts": {
+    "build": "ray build",
+    "dev": "ray develop",
+    "lint": "ray lint"
+  }
+}

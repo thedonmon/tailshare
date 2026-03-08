@@ -54,6 +54,7 @@ fn tailscale_bin() -> &'static str {
 fn get_status() -> Result<TailscaleStatus> {
     let output = Command::new(tailscale_bin())
         .args(["status", "--json"])
+        .env("TERM", "xterm")
         .output()
         .context("Failed to run 'tailscale'. Is Tailscale installed?")?;
 
