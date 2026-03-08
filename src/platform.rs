@@ -6,6 +6,8 @@ use std::process::Command;
 pub enum ClipboardContent {
     Text(String),
     Image(Vec<u8>),
+    /// A file copied from Finder (contains the full path)
+    File(String),
     Empty,
 }
 
@@ -186,7 +188,39 @@ set the clipboard to (read theFile as «class PNGf»)"#,
     }
 }
 
+/// Check if clipboard contains a file reference (e.g. copied from Finder)
+pub fn get_local_file_path() -> Option<String> {
+    if cfg!(target_os = "macos") {
+        // Check if clipboard has a file URL
+        let info = Command::new("osascript")
+            .args(["-e", "clipboard info"])
+            .output()
+            .ok()?;
+        let info_str = String::from_utf8_lossy(&info.stdout);
+        if !info_str.contains("furl") {
+            return None;
+        }
+        // Get the POSIX path
+        let output = Command::new("osascript")
+            .args(["-e", "POSIX path of (the clipboard as «class furl»)"])
+            .output()
+            .ok()?;
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() && std::path::Path::new(&path).exists() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
 pub fn get_local_clipboard_content() -> Result<ClipboardContent> {
+    // Check for file reference first (Finder copy)
+    if let Some(path) = get_local_file_path() {
+        return Ok(ClipboardContent::File(path));
+    }
+    // Then check for image data (screenshot, image copy)
     if has_local_image() {
         match get_local_image() {
             Ok(data) => return Ok(ClipboardContent::Image(data)),

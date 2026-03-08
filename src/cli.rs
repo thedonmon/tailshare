@@ -91,6 +91,15 @@ pub enum ConfigCommands {
         user: String,
     },
 
+    /// Set the OS for a device (overrides Tailscale detection)
+    SetOs {
+        /// Device name (or "local" for this machine)
+        device: String,
+        /// Operating system: macos, linux, windows
+        #[arg(value_parser = ["macos", "linux", "windows"])]
+        os: String,
+    },
+
     /// Show current configuration
     Show,
 }

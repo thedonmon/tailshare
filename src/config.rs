@@ -9,10 +9,15 @@ use crate::cli::ConfigCommands;
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Config {
     pub default_device: Option<String>,
+    /// OS of the current (local) machine: "macos", "linux", "windows"
+    pub local_os: Option<String>,
     #[serde(default)]
     pub aliases: HashMap<String, String>,
     #[serde(default)]
     pub users: HashMap<String, String>,
+    /// Override OS per device (device name -> "macos"/"linux"/"windows")
+    #[serde(default)]
+    pub os_overrides: HashMap<String, String>,
 }
 
 fn config_path() -> PathBuf {
@@ -70,6 +75,23 @@ pub fn handle_command(cmd: ConfigCommands) -> Result<()> {
                 user
             );
         }
+        ConfigCommands::SetOs { device, os } => {
+            let mut config = load()?.unwrap_or_default();
+            if device == "local" {
+                config.local_os = Some(os.clone());
+                save(&config)?;
+                println!("{} Local OS set to: {}", "✓".green(), os.bold());
+            } else {
+                config.os_overrides.insert(device.clone(), os.clone());
+                save(&config)?;
+                println!(
+                    "{} OS for '{}' set to: {}",
+                    "✓".green(),
+                    device.bold(),
+                    os
+                );
+            }
+        }
         ConfigCommands::Show => {
             match load()? {
                 Some(config) => {
@@ -82,6 +104,16 @@ pub fn handle_command(cmd: ConfigCommands) -> Result<()> {
                             .as_deref()
                             .unwrap_or("(not set)")
                     );
+                    println!(
+                        "  Local OS: {}",
+                        config.local_os.as_deref().unwrap_or("(auto-detect)")
+                    );
+                    if !config.os_overrides.is_empty() {
+                        println!("  OS overrides:");
+                        for (device, os) in &config.os_overrides {
+                            println!("    {} -> {}", device.bold(), os);
+                        }
+                    }
                     if config.users.is_empty() {
                         println!("  SSH users: (none)");
                     } else {

@@ -122,6 +122,25 @@ pub fn scp_to(device: &Device, local_path: &str, remote_path: &str) -> Result<()
     Ok(())
 }
 
+pub fn scp_from(device: &Device, remote_path: &str, local_path: &str) -> Result<()> {
+    let target = ssh_target(device);
+    let remote_src = format!("{}:{}", target, remote_path);
+    let status = Command::new("scp")
+        .args([
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=5",
+            &remote_src,
+            local_path,
+        ])
+        .status()
+        .context(format!("Failed to SCP from {}", device.name))?;
+
+    if !status.success() {
+        anyhow::bail!("SCP from {} failed", device.name);
+    }
+    Ok(())
+}
+
 pub fn pipe_to_command(device: &Device, cmd: &str, input: &str) -> Result<()> {
     let target = ssh_target(device);
     let mut child = Command::new("ssh")

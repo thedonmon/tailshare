@@ -71,6 +71,27 @@ fn get_status() -> Result<TailscaleStatus> {
 fn node_to_device(node: &TailscaleNode, is_self: bool) -> Device {
     let dns_clean = node.dns_name.trim_end_matches('.').to_string();
     let short_name = dns_clean.split('.').next().unwrap_or("").to_string();
+
+    // Check for OS override in config
+    let os = if let Ok(Some(cfg)) = crate::config::load() {
+        if is_self {
+            cfg.local_os.unwrap_or_else(|| node.os.clone())
+        } else {
+            cfg.os_overrides
+                .get(&node.hostname)
+                .cloned()
+                .unwrap_or_else(|| node.os.clone())
+        }
+    } else {
+        node.os.clone()
+    };
+
+    // Normalize OS names: config uses "macos"/"linux"/"windows", Tailscale uses "macOS"/"linux"/"windows"
+    let os = match os.as_str() {
+        "macos" => "macOS".to_string(),
+        other => other.to_string(),
+    };
+
     Device {
         name: node.hostname.clone(),
         dns_name: dns_clean,
@@ -78,7 +99,7 @@ fn node_to_device(node: &TailscaleNode, is_self: bool) -> Device {
         ip: node.tailscale_ips.first().cloned().unwrap_or_default(),
         online: node.online,
         is_self,
-        os: node.os.clone(),
+        os,
     }
 }
 

@@ -18,10 +18,12 @@ fn set_remote_clipboard(device: &Device, content: &str) -> Result<()> {
 }
 
 fn truncate_preview(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.replace('\n', " ").to_string()
+    let flat = s.replace('\n', " ");
+    if flat.len() <= max {
+        flat
     } else {
-        format!("{}...", s[..max].replace('\n', " "))
+        let truncated: String = flat.chars().take(max).collect();
+        format!("{}...", truncated)
     }
 }
 
@@ -42,10 +44,69 @@ pub async fn send(device: &Device) -> Result<()> {
                 preview.dimmed()
             );
         }
+        ClipboardContent::File(path) => {
+            let file_name = std::path::Path::new(&path)
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.clone());
+            let metadata = std::fs::metadata(&path)?;
+            let size = metadata.len();
+            let size_display = if size < 1024 {
+                format!("{}B", size)
+            } else if size < 1024 * 1024 {
+                format!("{:.1}KB", size as f64 / 1024.0)
+            } else {
+                format!("{:.1}MB", size as f64 / (1024.0 * 1024.0))
+            };
+
+            // Use a cache dir for clipboard sends (not Downloads)
+            let home = ssh::run_command(device, "echo $HOME")?.trim().to_string();
+            let cache_dir = format!("{}/.cache/tailshare", home);
+            ssh::run_command(device, &format!("mkdir -p {}", cache_dir))?;
+            let remote_path = format!("{}/{}", cache_dir, file_name);
+            ssh::scp_to(device, &path, &remote_path)?;
+
+            // Set file on remote clipboard so it shows in clipboard history
+            if device.os == "macOS" {
+                let expanded_path = &remote_path;
+                // Check if it's an image — set as image clipboard
+                let ext = std::path::Path::new(&path)
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "bmp" | "tiff") {
+                    let script = format!(
+                        r#"osascript -e 'set theFile to POSIX file "{}"' -e 'set the clipboard to (read theFile as «class PNGf»)'"#,
+                        expanded_path
+                    );
+                    let _ = ssh::run_command(device, &script);
+                } else {
+                    // For non-image files, set the file reference on clipboard
+                    let script = format!(
+                        r#"osascript -e 'set the clipboard to POSIX file "{}"'"#,
+                        expanded_path
+                    );
+                    let _ = ssh::run_command(device, &script);
+                }
+            }
+
+            println!(
+                "{} Sent file {} ({}) to {}:{}",
+                "✓".green(),
+                file_name.bold(),
+                size_display,
+                device.name.bold(),
+                remote_path
+            );
+        }
         ClipboardContent::Image(data) => {
             let size_kb = data.len() / 1024;
-            // Transfer image as binary via SSH
-            ssh::pipe_bytes_to_command(device, "cat > /tmp/tailshare_img.png", &data)?;
+            // Write image to local temp file, then SCP it (preserves binary data)
+            let tmp_local = std::env::temp_dir().join("tailshare_send.png");
+            std::fs::write(&tmp_local, &data)?;
+            ssh::scp_to(device, &tmp_local.to_string_lossy(), "/tmp/tailshare_img.png")?;
+            let _ = std::fs::remove_file(&tmp_local);
+
             // Set it as clipboard on remote macOS
             if device.os == "macOS" {
                 ssh::run_command(
@@ -76,8 +137,13 @@ pub async fn get(device: &Device) -> Result<()> {
                 device,
                 r#"osascript -e 'set theFile to POSIX file "/tmp/tailshare_img.png"' -e 'set fRef to open for access theFile with write permission' -e 'set eof fRef to 0' -e 'write (the clipboard as «class PNGf») to fRef' -e 'close access fRef'"#,
             )?;
-            let image_data = ssh::run_command_bytes(device, "cat /tmp/tailshare_img.png")?;
+            // SCP the image back (preserves binary data)
+            let tmp_local = std::env::temp_dir().join("tailshare_recv.png");
+            let tmp_local_str = tmp_local.to_string_lossy().to_string();
+            ssh::scp_from(device, "/tmp/tailshare_img.png", &tmp_local_str)?;
             ssh::run_command(device, "rm /tmp/tailshare_img.png")?;
+            let image_data = std::fs::read(&tmp_local)?;
+            let _ = std::fs::remove_file(&tmp_local);
 
             if !image_data.is_empty() {
                 platform::set_local_image(&image_data)?;
