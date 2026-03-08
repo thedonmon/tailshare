@@ -1,6 +1,7 @@
 mod cli;
 mod clipboard;
 mod config;
+mod file;
 mod platform;
 mod ssh;
 mod tailscale;
@@ -28,6 +29,10 @@ async fn main() -> Result<()> {
         Commands::Watch { device, interval } => {
             let target = resolve_device(&device).await?;
             clipboard::watch(&target, interval).await?;
+        }
+        Commands::FileSend { path, device, dest } => {
+            let target = resolve_device(&device).await?;
+            file::send_file(&target, &path, dest.as_deref()).await?;
         }
         Commands::Setup { device } => {
             let target = resolve_device(&device).await?;

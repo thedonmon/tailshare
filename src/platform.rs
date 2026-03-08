@@ -2,14 +2,21 @@ use anyhow::{Context, Result};
 use std::io::Write;
 use std::process::Command;
 
-/// Returns (paste_cmd, paste_args) for reading clipboard on the local platform
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClipboardContent {
+    Text(String),
+    Image(Vec<u8>),
+    Empty,
+}
+
+// --- Local clipboard: text ---
+
 fn paste_command() -> (&'static str, &'static [&'static str]) {
     if cfg!(target_os = "macos") {
         ("pbpaste", &[])
     } else if cfg!(target_os = "windows") {
         ("powershell.exe", &["-NoProfile", "-Command", "Get-Clipboard"])
     } else {
-        // Linux: prefer wl-paste (Wayland), fall back to xclip (X11)
         if which_exists("wl-paste") {
             ("wl-paste", &[])
         } else {
@@ -18,7 +25,6 @@ fn paste_command() -> (&'static str, &'static [&'static str]) {
     }
 }
 
-/// Returns (copy_cmd, copy_args) for writing clipboard on the local platform
 fn copy_command() -> (&'static str, &'static [&'static str]) {
     if cfg!(target_os = "macos") {
         ("pbcopy", &[])
@@ -39,25 +45,6 @@ fn which_exists(cmd: &str) -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
-}
-
-/// Returns the remote clipboard command based on the device's OS
-pub fn remote_paste_cmd(os: &str) -> &'static str {
-    match os {
-        "macOS" => "pbpaste",
-        "windows" => "powershell.exe -NoProfile -Command Get-Clipboard",
-        // Linux
-        _ => "bash -c 'if command -v wl-paste >/dev/null 2>&1; then wl-paste; elif command -v xclip >/dev/null 2>&1; then xclip -selection clipboard -o; else echo \"ERROR: no clipboard tool found\" >&2; exit 1; fi'",
-    }
-}
-
-/// Returns the remote copy command based on the device's OS
-pub fn remote_copy_cmd(os: &str) -> &'static str {
-    match os {
-        "macOS" => "pbcopy",
-        "windows" => "clip.exe",
-        _ => "bash -c 'if command -v wl-copy >/dev/null 2>&1; then wl-copy; elif command -v xclip >/dev/null 2>&1; then xclip -selection clipboard; else echo \"ERROR: no clipboard tool found\" >&2; exit 1; fi'",
-    }
 }
 
 pub fn get_local_clipboard() -> Result<String> {
@@ -81,3 +68,156 @@ pub fn set_local_clipboard(content: &str) -> Result<()> {
     child.wait()?;
     Ok(())
 }
+
+// --- Local clipboard: images ---
+
+pub fn has_local_image() -> bool {
+    if cfg!(target_os = "macos") {
+        let output = Command::new("osascript")
+            .args(["-e", "clipboard info"])
+            .output();
+        match output {
+            Ok(o) => {
+                let info = String::from_utf8_lossy(&o.stdout);
+                info.contains("PNGf") || info.contains("TIFF")
+            }
+            Err(_) => false,
+        }
+    } else if cfg!(target_os = "linux") {
+        if which_exists("wl-paste") {
+            Command::new("wl-paste")
+                .args(["--list-types"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).contains("image/png"))
+                .unwrap_or(false)
+        } else {
+            Command::new("xclip")
+                .args(["-selection", "clipboard", "-t", "TARGETS", "-o"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).contains("image/png"))
+                .unwrap_or(false)
+        }
+    } else {
+        false // Windows image clipboard is complex, skip for now
+    }
+}
+
+pub fn get_local_image() -> Result<Vec<u8>> {
+    if cfg!(target_os = "macos") {
+        // Use osascript to write clipboard image to a temp file, then read it
+        let tmp = std::env::temp_dir().join("tailshare_clip.png");
+        let tmp_str = tmp.to_string_lossy();
+        let script = format!(
+            r#"set theFile to POSIX file "{}"
+set fRef to open for access theFile with write permission
+set eof fRef to 0
+write (the clipboard as «class PNGf») to fRef
+close access fRef"#,
+            tmp_str
+        );
+        let status = Command::new("osascript")
+            .args(["-e", &script])
+            .status()
+            .context("Failed to extract image from clipboard")?;
+        if !status.success() {
+            anyhow::bail!("osascript failed to extract clipboard image");
+        }
+        let data = std::fs::read(&tmp)?;
+        let _ = std::fs::remove_file(&tmp);
+        Ok(data)
+    } else if cfg!(target_os = "linux") {
+        let output = if which_exists("wl-paste") {
+            Command::new("wl-paste")
+                .args(["--type", "image/png"])
+                .output()
+        } else {
+            Command::new("xclip")
+                .args(["-selection", "clipboard", "-t", "image/png", "-o"])
+                .output()
+        };
+        let output = output.context("Failed to read image from clipboard")?;
+        if !output.status.success() {
+            anyhow::bail!("Failed to read image from clipboard");
+        }
+        Ok(output.stdout)
+    } else {
+        anyhow::bail!("Image clipboard not supported on this platform yet")
+    }
+}
+
+pub fn set_local_image(data: &[u8]) -> Result<()> {
+    if cfg!(target_os = "macos") {
+        let tmp = std::env::temp_dir().join("tailshare_clip_in.png");
+        std::fs::write(&tmp, data)?;
+        let tmp_str = tmp.to_string_lossy();
+        let script = format!(
+            r#"set theFile to POSIX file "{}"
+set the clipboard to (read theFile as «class PNGf»)"#,
+            tmp_str
+        );
+        let status = Command::new("osascript")
+            .args(["-e", &script])
+            .status()
+            .context("Failed to set clipboard image")?;
+        let _ = std::fs::remove_file(&tmp);
+        if !status.success() {
+            anyhow::bail!("osascript failed to set clipboard image");
+        }
+        Ok(())
+    } else if cfg!(target_os = "linux") {
+        let child = if which_exists("wl-copy") {
+            Command::new("wl-copy")
+                .args(["--type", "image/png"])
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+        } else {
+            Command::new("xclip")
+                .args(["-selection", "clipboard", "-t", "image/png"])
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+        };
+        #[allow(unused_mut)]
+        let mut child = child.context("Failed to set clipboard image")?;
+        child.stdin.as_mut().unwrap().write_all(data)?;
+        child.wait()?;
+        Ok(())
+    } else {
+        anyhow::bail!("Image clipboard not supported on this platform yet")
+    }
+}
+
+pub fn get_local_clipboard_content() -> Result<ClipboardContent> {
+    if has_local_image() {
+        match get_local_image() {
+            Ok(data) => return Ok(ClipboardContent::Image(data)),
+            Err(_) => {} // Fall through to text
+        }
+    }
+    let text = get_local_clipboard()?;
+    if text.is_empty() {
+        Ok(ClipboardContent::Empty)
+    } else {
+        Ok(ClipboardContent::Text(text))
+    }
+}
+
+// --- Remote clipboard commands ---
+
+pub fn remote_paste_cmd(os: &str) -> &'static str {
+    match os {
+        "macOS" => "pbpaste",
+        "windows" => "powershell.exe -NoProfile -Command Get-Clipboard",
+        _ => "bash -c 'if command -v wl-paste >/dev/null 2>&1; then wl-paste; elif command -v xclip >/dev/null 2>&1; then xclip -selection clipboard -o; else echo \"ERROR: no clipboard tool found\" >&2; exit 1; fi'",
+    }
+}
+
+pub fn remote_copy_cmd(os: &str) -> &'static str {
+    match os {
+        "macOS" => "pbcopy",
+        "windows" => "clip.exe",
+        _ => "bash -c 'if command -v wl-copy >/dev/null 2>&1; then wl-copy; elif command -v xclip >/dev/null 2>&1; then xclip -selection clipboard; else echo \"ERROR: no clipboard tool found\" >&2; exit 1; fi'",
+    }
+}
+
+// --- File transfer helpers ---
+

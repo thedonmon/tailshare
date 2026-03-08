@@ -3,7 +3,7 @@ use colored::Colorize;
 use std::time::Duration;
 use tokio::time;
 
-use crate::platform;
+use crate::platform::{self, ClipboardContent};
 use crate::ssh;
 use crate::tailscale::Device;
 
@@ -26,25 +26,74 @@ fn truncate_preview(s: &str, max: usize) -> String {
 }
 
 pub async fn send(device: &Device) -> Result<()> {
-    let content = platform::get_local_clipboard()?;
-    if content.is_empty() {
-        println!("{}", "Clipboard is empty, nothing to send.".yellow());
-        return Ok(());
+    let content = platform::get_local_clipboard_content()?;
+
+    match content {
+        ClipboardContent::Empty => {
+            println!("{}", "Clipboard is empty, nothing to send.".yellow());
+        }
+        ClipboardContent::Text(text) => {
+            set_remote_clipboard(device, &text)?;
+            let preview = truncate_preview(&text, 50);
+            println!(
+                "{} Sent to {}: \"{}\"",
+                "✓".green(),
+                device.name.bold(),
+                preview.dimmed()
+            );
+        }
+        ClipboardContent::Image(data) => {
+            let size_kb = data.len() / 1024;
+            // Transfer image as binary via SSH
+            ssh::pipe_bytes_to_command(device, "cat > /tmp/tailshare_img.png", &data)?;
+            // Set it as clipboard on remote macOS
+            if device.os == "macOS" {
+                ssh::run_command(
+                    device,
+                    r#"osascript -e 'set theFile to POSIX file "/tmp/tailshare_img.png"' -e 'set the clipboard to (read theFile as «class PNGf»)'"#,
+                )?;
+                ssh::run_command(device, "rm /tmp/tailshare_img.png")?;
+            }
+            println!(
+                "{} Sent image ({}KB) to {}",
+                "✓".green(),
+                size_kb,
+                device.name.bold()
+            );
+        }
     }
 
-    set_remote_clipboard(device, &content)?;
-
-    let preview = truncate_preview(&content, 50);
-    println!(
-        "{} Sent to {}: \"{}\"",
-        "✓".green(),
-        device.name.bold(),
-        preview.dimmed()
-    );
     Ok(())
 }
 
 pub async fn get(device: &Device) -> Result<()> {
+    // Check if remote has an image on clipboard (macOS only)
+    if device.os == "macOS" {
+        let info = ssh::run_command(device, "osascript -e 'clipboard info'").unwrap_or_default();
+        if info.contains("PNGf") || info.contains("TIFF") {
+            // Extract image from remote clipboard
+            ssh::run_command(
+                device,
+                r#"osascript -e 'set theFile to POSIX file "/tmp/tailshare_img.png"' -e 'set fRef to open for access theFile with write permission' -e 'set eof fRef to 0' -e 'write (the clipboard as «class PNGf») to fRef' -e 'close access fRef'"#,
+            )?;
+            let image_data = ssh::run_command_bytes(device, "cat /tmp/tailshare_img.png")?;
+            ssh::run_command(device, "rm /tmp/tailshare_img.png")?;
+
+            if !image_data.is_empty() {
+                platform::set_local_image(&image_data)?;
+                let size_kb = image_data.len() / 1024;
+                println!(
+                    "{} Got image ({}KB) from {}",
+                    "✓".green(),
+                    size_kb,
+                    device.name.bold()
+                );
+                return Ok(());
+            }
+        }
+    }
+
+    // Fall back to text
     let content = get_remote_clipboard(device)?;
     if content.is_empty() {
         println!(

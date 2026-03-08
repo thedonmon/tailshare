@@ -53,6 +53,75 @@ pub fn run_command(device: &Device, cmd: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+pub fn run_command_bytes(device: &Device, cmd: &str) -> Result<Vec<u8>> {
+    let target = ssh_target(device);
+    let output = Command::new("ssh")
+        .args([
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=5",
+            "-o", "StrictHostKeyChecking=accept-new",
+            &target,
+            cmd,
+        ])
+        .output()
+        .context(format!("Failed to SSH to {}", device.name))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("SSH command failed on {}: {}", device.name, stderr);
+    }
+
+    Ok(output.stdout)
+}
+
+pub fn pipe_bytes_to_command(device: &Device, cmd: &str, input: &[u8]) -> Result<()> {
+    let target = ssh_target(device);
+    let mut child = Command::new("ssh")
+        .args([
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=5",
+            "-o", "StrictHostKeyChecking=accept-new",
+            &target,
+            cmd,
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context(format!("Failed to SSH to {}", device.name))?;
+
+    child.stdin.as_mut().unwrap().write_all(input)?;
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("SSH command failed on {}: {}", device.name, stderr);
+    }
+
+    Ok(())
+}
+
+pub fn scp_to(device: &Device, local_path: &str, remote_path: &str) -> Result<()> {
+    let target = ssh_target(device);
+    // Extract user@host from target
+    let remote_dest = format!("{}:{}", target, remote_path);
+    let status = Command::new("scp")
+        .args([
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=5",
+            local_path,
+            &remote_dest,
+        ])
+        .status()
+        .context(format!("Failed to SCP to {}", device.name))?;
+
+    if !status.success() {
+        anyhow::bail!("SCP failed to {}", device.name);
+    }
+    Ok(())
+}
+
 pub fn pipe_to_command(device: &Device, cmd: &str, input: &str) -> Result<()> {
     let target = ssh_target(device);
     let mut child = Command::new("ssh")

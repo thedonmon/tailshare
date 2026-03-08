@@ -47,6 +47,21 @@ pub enum Commands {
         device: String,
     },
 
+    /// Send a file to a remote device
+    #[command(name = "file")]
+    FileSend {
+        /// Path to the file to send
+        path: String,
+
+        /// Device name, alias, or "default"
+        #[arg(default_value = "default")]
+        device: String,
+
+        /// Destination path on remote (defaults to ~/Downloads/)
+        #[arg(short, long)]
+        dest: Option<String>,
+    },
+
     /// Manage configuration
     #[command(subcommand)]
     Config(ConfigCommands),
