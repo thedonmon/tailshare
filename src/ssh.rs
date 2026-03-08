@@ -6,7 +6,6 @@ use std::process::Command;
 use crate::tailscale::Device;
 
 pub fn ssh_target(device: &Device) -> String {
-    // Prefer MagicDNS short name, then FQDN, then IP
     let host = if !device.short_name.is_empty() {
         &device.short_name
     } else if !device.dns_name.is_empty() {
@@ -15,38 +14,14 @@ pub fn ssh_target(device: &Device) -> String {
         &device.ip
     };
 
-    // Check if there's a user configured for this device
+    // Look up user by short_name (the stable kebab-case identifier)
     if let Some(cfg) = crate::config::load().ok().flatten() {
-        if let Some(user) = find_user_config(&cfg.users, &device.name) {
+        if let Some(user) = cfg.users.get(&device.short_name) {
             return format!("{}@{}", user, host);
         }
     }
 
     host.clone()
-}
-
-/// Normalize quotes/apostrophes for config key matching
-fn normalize_name(name: &str) -> String {
-    name.replace('\u{2019}', "'")
-        .replace('\u{2018}', "'")
-        .replace('\u{201C}', "\"")
-        .replace('\u{201D}', "\"")
-}
-
-/// Find a user in the config map, normalizing unicode chars
-fn find_user_config(users: &std::collections::HashMap<String, String>, device_name: &str) -> Option<String> {
-    // Try exact match first
-    if let Some(user) = users.get(device_name) {
-        return Some(user.clone());
-    }
-    // Try normalized match
-    let normalized = normalize_name(device_name);
-    for (key, user) in users {
-        if normalize_name(key) == normalized {
-            return Some(user.clone());
-        }
-    }
-    None
 }
 
 pub fn run_command(device: &Device, cmd: &str) -> Result<String> {
@@ -68,7 +43,7 @@ pub fn run_command(device: &Device, cmd: &str) -> Result<String> {
             anyhow::bail!(
                 "SSH auth failed for {}. Run: tailshare setup {}",
                 device.name,
-                device.name
+                device.short_name
             );
         }
         anyhow::bail!("SSH command failed on {}: {}", device.name, stderr);
@@ -77,58 +52,8 @@ pub fn run_command(device: &Device, cmd: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-pub fn run_command_bytes(device: &Device, cmd: &str) -> Result<Vec<u8>> {
-    let target = ssh_target(device);
-    let output = Command::new("ssh")
-        .args([
-            "-o", "BatchMode=yes",
-            "-o", "ConnectTimeout=5",
-            "-o", "StrictHostKeyChecking=accept-new",
-            &target,
-            cmd,
-        ])
-        .output()
-        .context(format!("Failed to SSH to {}", device.name))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("SSH command failed on {}: {}", device.name, stderr);
-    }
-
-    Ok(output.stdout)
-}
-
-pub fn pipe_bytes_to_command(device: &Device, cmd: &str, input: &[u8]) -> Result<()> {
-    let target = ssh_target(device);
-    let mut child = Command::new("ssh")
-        .args([
-            "-o", "BatchMode=yes",
-            "-o", "ConnectTimeout=5",
-            "-o", "StrictHostKeyChecking=accept-new",
-            &target,
-            cmd,
-        ])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .context(format!("Failed to SSH to {}", device.name))?;
-
-    child.stdin.as_mut().unwrap().write_all(input)?;
-    drop(child.stdin.take());
-
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("SSH command failed on {}: {}", device.name, stderr);
-    }
-
-    Ok(())
-}
-
 pub fn scp_to(device: &Device, local_path: &str, remote_path: &str) -> Result<()> {
     let target = ssh_target(device);
-    // Extract user@host from target
     let remote_dest = format!("{}:{}", target, remote_path);
     let status = Command::new("scp")
         .args([
@@ -198,20 +123,15 @@ pub fn pipe_to_command(device: &Device, cmd: &str, input: &str) -> Result<()> {
 
 pub async fn setup(device: &Device) -> Result<()> {
     println!(
-        "Setting up SSH key auth with {}...",
-        device.name.bold()
+        "Setting up SSH key auth with {} ({})...",
+        device.name.bold(),
+        device.short_name.dimmed()
     );
 
-    // Use short_name for key filename (no spaces or special chars)
-    let safe_name = if !device.short_name.is_empty() {
-        device.short_name.clone()
-    } else {
-        device.name.replace(' ', "-").replace('\'', "").replace('\u{2019}', "").to_lowercase()
-    };
     let key_path = dirs::home_dir()
         .unwrap()
         .join(".ssh")
-        .join(format!("tailshare_{}", safe_name));
+        .join(format!("tailshare_{}", device.short_name));
 
     let key_path_str = key_path.to_string_lossy().to_string();
     let pub_key_path = format!("{}.pub", key_path_str);
@@ -224,7 +144,7 @@ pub async fn setup(device: &Device) -> Result<()> {
                 "-t", "ed25519",
                 "-f", &key_path_str,
                 "-N", "",
-                "-C", &format!("tailshare-{}", device.name),
+                "-C", &format!("tailshare-{}", device.short_name),
             ])
             .status()
             .context("Failed to generate SSH key")?;
@@ -237,7 +157,7 @@ pub async fn setup(device: &Device) -> Result<()> {
         println!("  Key already exists: {}", key_path_str);
     }
 
-    // Copy key to remote
+    // Copy key to remote (uses configured user via ssh_target)
     let target = ssh_target(device);
     println!(
         "  Copying key to {} (you may be prompted for password)...",
@@ -249,34 +169,31 @@ pub async fn setup(device: &Device) -> Result<()> {
         .context("Failed to run ssh-copy-id")?;
 
     if !status.success() {
-        anyhow::bail!("ssh-copy-id failed. Make sure you can SSH to {} with a password.", device.name);
+        anyhow::bail!(
+            "ssh-copy-id failed. Make sure you can SSH to {} or set the user first:\n  tailshare config set-user {} <username>",
+            device.name,
+            device.short_name
+        );
     }
 
     // Add to SSH config
     let ssh_config_path = dirs::home_dir().unwrap().join(".ssh").join("config");
-    let host = if !device.short_name.is_empty() {
-        &device.short_name
-    } else {
-        &device.dns_name
-    };
-    // Get configured user for SSH config entry
+    let host = &device.short_name;
     let user_line = if let Some(cfg) = crate::config::load().ok().flatten() {
-        cfg.users.get(&device.name).map(|u| format!("\n    User {}", u))
+        cfg.users.get(&device.short_name).map(|u| format!("\n    User {}", u))
     } else {
         None
     };
     let config_entry = format!(
         "\n# Added by tailshare\nHost {}{}\n    HostName {}\n    IdentityFile {}\n    ControlMaster auto\n    ControlPath ~/.ssh/sockets/%r@%h-%p\n    ControlPersist 600\n",
-        device.short_name,
+        host,
         user_line.unwrap_or_default(),
         host,
         key_path_str
     );
 
-    // Check if entry already exists
     let existing = std::fs::read_to_string(&ssh_config_path).unwrap_or_default();
-    if !existing.contains(&format!("Host {}", device.short_name)) {
-        // Ensure sockets dir exists
+    if !existing.contains(&format!("Host {}", host)) {
         let sockets_dir = dirs::home_dir().unwrap().join(".ssh").join("sockets");
         std::fs::create_dir_all(&sockets_dir)?;
 
@@ -305,8 +222,8 @@ pub async fn setup(device: &Device) -> Result<()> {
         println!(
             "\n{} Setup complete! You can now use:\n  tailshare send {}\n  tailshare get {}",
             "✓".green().bold(),
-            device.name,
-            device.name
+            device.short_name,
+            device.short_name
         );
     } else {
         println!(
