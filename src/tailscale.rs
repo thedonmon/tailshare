@@ -80,6 +80,12 @@ fn node_to_device(node: &TailscaleNode, is_self: bool) -> Device {
         } else {
             cfg.os_overrides
                 .get(&node.hostname)
+                .or_else(|| {
+                    let normalized = node.hostname.replace('\u{2019}', "'").replace('\u{2018}', "'");
+                    cfg.os_overrides.iter()
+                        .find(|(k, _)| k.replace('\u{2019}', "'").replace('\u{2018}', "'") == normalized)
+                        .map(|(_, v)| v)
+                })
                 .cloned()
                 .unwrap_or_else(|| node.os.clone())
         }

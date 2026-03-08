@@ -17,12 +17,36 @@ pub fn ssh_target(device: &Device) -> String {
 
     // Check if there's a user configured for this device
     if let Some(cfg) = crate::config::load().ok().flatten() {
-        if let Some(user) = cfg.users.get(&device.name) {
+        if let Some(user) = find_user_config(&cfg.users, &device.name) {
             return format!("{}@{}", user, host);
         }
     }
 
     host.clone()
+}
+
+/// Normalize quotes/apostrophes for config key matching
+fn normalize_name(name: &str) -> String {
+    name.replace('\u{2019}', "'")
+        .replace('\u{2018}', "'")
+        .replace('\u{201C}', "\"")
+        .replace('\u{201D}', "\"")
+}
+
+/// Find a user in the config map, normalizing unicode chars
+fn find_user_config(users: &std::collections::HashMap<String, String>, device_name: &str) -> Option<String> {
+    // Try exact match first
+    if let Some(user) = users.get(device_name) {
+        return Some(user.clone());
+    }
+    // Try normalized match
+    let normalized = normalize_name(device_name);
+    for (key, user) in users {
+        if normalize_name(key) == normalized {
+            return Some(user.clone());
+        }
+    }
+    None
 }
 
 pub fn run_command(device: &Device, cmd: &str) -> Result<String> {
@@ -178,10 +202,16 @@ pub async fn setup(device: &Device) -> Result<()> {
         device.name.bold()
     );
 
+    // Use short_name for key filename (no spaces or special chars)
+    let safe_name = if !device.short_name.is_empty() {
+        device.short_name.clone()
+    } else {
+        device.name.replace(' ', "-").replace('\'', "").replace('\u{2019}', "").to_lowercase()
+    };
     let key_path = dirs::home_dir()
         .unwrap()
         .join(".ssh")
-        .join(format!("tailshare_{}", device.name));
+        .join(format!("tailshare_{}", safe_name));
 
     let key_path_str = key_path.to_string_lossy().to_string();
     let pub_key_path = format!("{}.pub", key_path_str);
