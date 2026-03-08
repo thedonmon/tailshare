@@ -208,12 +208,13 @@ pub async fn setup(device: &Device) -> Result<()> {
     }
 
     // Copy key to remote
+    let target = ssh_target(device);
     println!(
         "  Copying key to {} (you may be prompted for password)...",
-        device.name
+        target
     );
     let status = Command::new("ssh-copy-id")
-        .args(["-i", &pub_key_path, &device.dns_name])
+        .args(["-i", &pub_key_path, &target])
         .status()
         .context("Failed to run ssh-copy-id")?;
 
@@ -223,14 +224,28 @@ pub async fn setup(device: &Device) -> Result<()> {
 
     // Add to SSH config
     let ssh_config_path = dirs::home_dir().unwrap().join(".ssh").join("config");
+    let host = if !device.short_name.is_empty() {
+        &device.short_name
+    } else {
+        &device.dns_name
+    };
+    // Get configured user for SSH config entry
+    let user_line = if let Some(cfg) = crate::config::load().ok().flatten() {
+        cfg.users.get(&device.name).map(|u| format!("\n    User {}", u))
+    } else {
+        None
+    };
     let config_entry = format!(
-        "\n# Added by tailshare\nHost {}\n    HostName {}\n    IdentityFile {}\n    ControlMaster auto\n    ControlPath ~/.ssh/sockets/%r@%h-%p\n    ControlPersist 600\n",
-        device.name, device.dns_name, key_path_str
+        "\n# Added by tailshare\nHost {}{}\n    HostName {}\n    IdentityFile {}\n    ControlMaster auto\n    ControlPath ~/.ssh/sockets/%r@%h-%p\n    ControlPersist 600\n",
+        device.short_name,
+        user_line.unwrap_or_default(),
+        host,
+        key_path_str
     );
 
     // Check if entry already exists
     let existing = std::fs::read_to_string(&ssh_config_path).unwrap_or_default();
-    if !existing.contains(&format!("Host {}", device.name)) {
+    if !existing.contains(&format!("Host {}", device.short_name)) {
         // Ensure sockets dir exists
         let sockets_dir = dirs::home_dir().unwrap().join(".ssh").join("sockets");
         std::fs::create_dir_all(&sockets_dir)?;
@@ -251,7 +266,7 @@ pub async fn setup(device: &Device) -> Result<()> {
         .args([
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=5",
-            &device.dns_name,
+            &target,
             "echo tailshare-ok",
         ])
         .output()?;

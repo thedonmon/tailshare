@@ -159,11 +159,13 @@ pub async fn find_device(query: &str) -> Result<Device> {
     let devices = get_all_devices()?;
     let query_lower = query.to_lowercase();
 
-    // Match by hostname, dns name, or IP
+    // Match by hostname, short name, dns name, or IP
     let found = devices.into_iter().find(|d| {
         d.name.to_lowercase() == query_lower
+            || d.short_name.to_lowercase() == query_lower
             || d.dns_name.to_lowercase().starts_with(&query_lower)
             || d.ip == query
+            || d.short_name.to_lowercase().contains(&query_lower)
             || d.name.to_lowercase().contains(&query_lower)
     });
 
