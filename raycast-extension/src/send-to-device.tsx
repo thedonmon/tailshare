@@ -39,7 +39,7 @@ export default function Command() {
               <Action
                 title="Send Clipboard"
                 icon={Icon.Upload}
-                onAction={() => sendTo(device.name)}
+                onAction={() => sendTo(device.shortName)}
               />
             </ActionPanel>
           }

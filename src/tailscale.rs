@@ -156,11 +156,11 @@ pub async fn list_devices() -> Result<()> {
 }
 
 pub async fn find_device(query: &str) -> Result<Device> {
-    let devices = get_all_devices()?;
+    let mut devices = get_all_devices()?;
     let query_lower = query.to_lowercase();
 
     // Match by hostname, short name, dns name, or IP
-    let found = devices.into_iter().find(|d| {
+    let found = devices.iter().position(|d| {
         d.name.to_lowercase() == query_lower
             || d.short_name.to_lowercase() == query_lower
             || d.dns_name.to_lowercase().starts_with(&query_lower)
@@ -169,5 +169,67 @@ pub async fn find_device(query: &str) -> Result<Device> {
             || d.name.to_lowercase().contains(&query_lower)
     });
 
-    found.ok_or_else(|| anyhow::anyhow!("Device '{}' not found on your tailnet", query))
+    if let Some(idx) = found {
+        return Ok(devices.remove(idx));
+    }
+
+    // Build a helpful error message with available devices and suggestions
+    let available: Vec<&Device> = devices.iter().filter(|d| !d.is_self).collect();
+
+    let mut msg = format!("Device '{}' not found on your tailnet.\n", query);
+
+    // Check if this looks like a stale config reference
+    if let Ok(Some(cfg)) = crate::config::load() {
+        let mut stale_refs = Vec::new();
+        if cfg.default_device.as_deref() == Some(query) {
+            stale_refs.push("default_device".to_string());
+        }
+        for (alias, target) in &cfg.aliases {
+            if target == query {
+                stale_refs.push(format!("alias '{}'", alias));
+            }
+        }
+        if cfg.users.contains_key(query) {
+            stale_refs.push("users".to_string());
+        }
+        if cfg.os_overrides.contains_key(query) {
+            stale_refs.push("os_overrides".to_string());
+        }
+        if !stale_refs.is_empty() {
+            msg.push_str(&format!(
+                "\nThis name appears in your config ({}) but no longer matches a device.\n\
+                 The machine may have been renamed. Run 'tailshare config doctor' to check.\n",
+                stale_refs.join(", ")
+            ));
+        }
+    }
+
+    // Suggest similar device names
+    let suggestions: Vec<&str> = available
+        .iter()
+        .filter(|d| {
+            let sn = d.short_name.to_lowercase();
+            let ql = query.to_lowercase();
+            // Share at least one word segment
+            ql.split('-').any(|part| part.len() >= 3 && sn.contains(part))
+                || sn.split('-').any(|part| part.len() >= 3 && ql.contains(part))
+        })
+        .map(|d| d.short_name.as_str())
+        .collect();
+
+    if !suggestions.is_empty() {
+        msg.push_str(&format!("\nDid you mean?\n"));
+        for s in &suggestions {
+            msg.push_str(&format!("  - {}\n", s));
+        }
+    }
+
+    msg.push_str(&format!("\nAvailable devices:\n"));
+    for d in &available {
+        let status = if d.online { "online" } else { "offline" };
+        msg.push_str(&format!("  {} ({}) [{}]\n", d.short_name, d.ip, status));
+    }
+    msg.push_str("\nTo update your config: tailshare config doctor");
+
+    Err(anyhow::anyhow!("{}", msg))
 }

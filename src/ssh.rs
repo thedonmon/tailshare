@@ -128,6 +128,9 @@ pub async fn setup(device: &Device) -> Result<()> {
         device.short_name.dimmed()
     );
 
+    // Record the device's stable IP for future name-change detection
+    let _ = crate::config::record_device_ip(&device.short_name, &device.ip);
+
     let key_path = dirs::home_dir()
         .unwrap()
         .join(".ssh")

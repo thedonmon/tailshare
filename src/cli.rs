@@ -47,6 +47,20 @@ pub enum Commands {
         device: String,
     },
 
+    /// Sync device names after renaming machines on Tailscale
+    ///
+    /// With no args: auto-detects stale names and fixes unambiguous ones.
+    /// With args: renames a specific device across config and SSH.
+    Sync {
+        /// Old device name to replace
+        old_name: Option<String>,
+        /// New device name (must exist on tailnet)
+        new_name: Option<String>,
+        /// Preview changes without applying them
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Send a file to a remote device
     #[command(name = "file")]
     FileSend {
@@ -102,4 +116,7 @@ pub enum ConfigCommands {
 
     /// Show current configuration
     Show,
+
+    /// Check config for stale device names and suggest fixes
+    Doctor,
 }

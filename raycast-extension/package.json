@@ -31,6 +31,12 @@
       "title": "Send Clipboard to Device",
       "description": "Pick a device and send your clipboard to it",
       "mode": "view"
+    },
+    {
+      "name": "install-cli",
+      "title": "Install / Update CLI",
+      "description": "Check if tailshare CLI is installed and install or update it",
+      "mode": "view"
     }
   ],
   "dependencies": {
